@@ -1,0 +1,29 @@
+# Test-Time Augmentation para cuantificacion de incertidumbre.
+# ElHayani, M. (2024). Real-Time Object Detection Uncertainty Quantification using Augmented Images for Autonomous Vehicles (Master's thesis). 
+# Technical University of Munich (TUM), Germany, adaptado a YOLO26+KITTI. 
+
+checkpoint: results/runs/detect/finetune_stage2_unfrozen/weights/best.pt
+
+data:
+  val_images_dir: data/kitti/images/val
+  val_labels_dir: data/kitti/labels/val
+
+tta:
+  n_tta: 10          # thesis Ec. 4.3: 10 pasadas aumentadas + 1 ancla sin aumentar
+  seed: 0
+
+detection:
+  conf_thres: 0.25       
+  iou_thres_nms: 0.5     
+
+matching:
+  iou_thres_tta_anchor: 0.80   # thesis Seccion 4.5.2: agrupacion TTA <-> ancla
+  iou_thres_gt: 0.5           
+                                
+aggregation:
+  methods: [max, mean, weighted_mean]
+
+output:
+  object_level_csv: results/tta_uq/object_level.csv
+  image_level_csv: results/tta_uq/image_level.csv
+  save_every: 100   
