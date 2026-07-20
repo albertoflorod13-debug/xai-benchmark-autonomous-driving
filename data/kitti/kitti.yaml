@@ -1,0 +1,18 @@
+# Documentation: https://docs.ultralytics.com/datasets/detect/kitti/
+
+path: kitti # dataset root dir
+train: images/train # train images (relative to 'path') 5985 images
+val: images/val # val images (relative to 'path') 1496 images
+
+names:
+  0: car
+  1: van
+  2: truck
+  3: pedestrian
+  4: Person_sitting
+  5: cyclist
+  6: tram
+  7: misc
+
+# Download script/URL (optional)
+download: https://github.com/ultralytics/assets/releases/download/v0.0.0/kitti.zip

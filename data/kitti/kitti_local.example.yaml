@@ -1,0 +1,19 @@
+# Plantilla de kitti_local.yaml -- ese archivo esta excluido de git porque contiene una
+# ruta absoluta especifica de cada maquina (ver .gitignore). Para generarlo:
+#   1. copia este archivo como data/kitti/kitti_local.yaml
+#   2. sustituye <RUTA_ABSOLUTA_AL_REPO> por la ruta absoluta real de tu copia local
+# (train_finetune_stage1.py y train_finetune_stage2.py lo requieren para poder ejecutarse.
+
+path: <RUTA_ABSOLUTA_AL_REPO>/data/kitti
+train: images/train
+val: images/val
+names:
+  0: car
+  1: van
+  2: truck
+  3: pedestrian
+  4: Person_sitting
+  5: cyclist
+  6: tram
+  7: misc
+download: https://github.com/ultralytics/assets/releases/download/v0.0.0/kitti.zip
