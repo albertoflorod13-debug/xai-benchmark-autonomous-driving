@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Dataset KITTI (se descarga automáticamente vía data/kitti/kitti.yaml, nunca en git)
+data/kitti/images/
+data/kitti/labels/
+data/kitti/*.cache
+data/kitti/kitti_local.yaml   # generado por notebooks/tests.ipynb, ruta absoluta especifica de cada maquina
+
+# Checkpoints Jupyter de notebooks exploratorios
+notebooks/.ipynb_checkpoints/
+
+# Pesos y checkpoints de modelos -- no se versionan por defecto (grandes y
+# reproducibles a partir de la config), salvo el checkpoint final ya entrenado,
+# para que el repo sea usable sin tener que re-entrenar (mismo criterio que el
+# propio D-CRISP, que incluye un best.pt final en su propio repositorio).
+models/pretrained/*
+models/finetuned/*
+!models/pretrained/.gitkeep
+!models/finetuned/.gitkeep
+*.pt
+*.pth
+*.onnx
+*.engine
+!models/finetuned/best.pt
+
+# Salidas brutas de Ultralytics (reproducibles a partir del modelo + config, no se versionan)
+results/runs/
+
+# D-CRISP vendorizado: repositorio de terceros, no se sube (ni codigo ni salidas)
+external/d-crisp/
+
+# Secretos / configuración local
+.env
+
+# Notas de trabajo internas -- no se publican en el repositorio remoto
+documentation.md
