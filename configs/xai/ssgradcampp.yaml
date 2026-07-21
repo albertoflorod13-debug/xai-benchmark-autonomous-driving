@@ -1,0 +1,39 @@
+# SSGrad-CAM++ (Toshinori Yamauchi, Spatial Sensitive Grad-CAM++: Towards High-Quality Visual 
+# Explanations for Object Detectors via Weighted Combination of Gradient Maps, 
+# https://www.sciencedirect.com/science/article/pii/S1077314226000251) adapted to YOLO26.
+
+checkpoint: results/runs/detect/finetune_stage2_unfrozen/weights/best.pt
+
+data:
+  val_images_dir: data/kitti/images/val
+  val_labels_dir: data/kitti/labels/val
+
+detection:
+  conf_thres: 0.25       # same frozen value as in tta_uq.yaml
+  iou_thres_nms: 0.5     # idem
+  iou_match_thres: 0.999 # IoU threshold to recover the anchor of a known detection
+                         
+
+matching:
+  iou_thres_gt: 0.5   # Matchmaking against the real GT, same criteria and threshold as tta_uq.yaml
+
+mask:
+  margin: 0   # M^{k,det}: 0 = a single grid cell
+
+numerics:
+  eps: 1.0e-8   # numerical stability of the denominator of alpha (Eq. 12, paper SSGrad-CAM++)
+
+device: cuda   
+
+output:
+  heatmaps_dir: results/ssgradcampp/heatmaps
+  object_level_csv: results/ssgradcampp/object_level.csv
+  save_every: 100  
+
+evaluation:
+  eval_metrics_csv: results/ssgradcampp/eval_metrics.csv
+  step: 5000
+  faithfulness_sample_size: 999999   
+   
+  seed: 0
+  save_every: 100
