@@ -94,7 +94,7 @@ def get_one2many_predictions(
         keep = max_conf > conf_thres
         boxes_xyxy, class_probs, max_conf = boxes_xyxy[keep], class_probs[keep], max_conf[keep]
 
-        keep_idx = TorchNMS.batched_nms(boxes_xyxy, max_conf, iou_thres) 
+        keep_idx = TorchNMS.nms(boxes_xyxy, max_conf, iou_thres)
 
         kept_boxes = scale_boxes(img1_shape, boxes_xyxy[keep_idx].clone(), orig_shape)  # back to original-image pixels
         # (same call Ultralytics itself makes in models/yolo/detect/predict.py right after inference)
