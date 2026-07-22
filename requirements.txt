@@ -1,0 +1,17 @@
+# Entorno verificado (.venv actual) — no se cambian versiones ya instaladas
+torch==2.6.0
+torchvision==0.21.0
+torchaudio==2.6.0
+ultralytics==8.4.56
+ultralytics-thop==2.0.19
+numpy==2.4.4
+opencv-python==4.13.0.92
+matplotlib==3.10.9
+pillow==12.2.0
+scipy==1.17.1
+pandas==3.0.3
+pyyaml==6.0.3
+quantus==0.6.0
+scikit-learn==1.9.0
+
+
