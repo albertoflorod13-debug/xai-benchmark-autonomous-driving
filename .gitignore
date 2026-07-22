@@ -23,10 +23,16 @@ Thumbs.db
 data/kitti/images/
 data/kitti/labels/
 data/kitti/*.cache
-data/kitti/kitti_local.yaml   # generado por notebooks/tests.ipynb, ruta absoluta especifica de cada maquina
+data/kitti/kitti_local.yaml
 
 # Checkpoints Jupyter de notebooks exploratorios
 notebooks/.ipynb_checkpoints/
+
+# Salidas del pipeline de evaluacion XAI (CSV/heatmaps, reproducibles ejecutando
+# scripts/run_xai_explanations.py y scripts/run_evaluation.py) -- mismo criterio que results/runs/
+results/ssgradcampp/*.csv
+results/ssgradcampp/heatmaps/
+results/tta_uq/*.csv
 
 # Pesos y checkpoints de modelos -- no se versionan por defecto (grandes y
 # reproducibles a partir de la config), salvo el checkpoint final ya entrenado,
