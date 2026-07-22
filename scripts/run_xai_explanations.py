@@ -164,7 +164,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    device = cfg["device"]
-    if device == "cuda" and not torch.cuda.is_available():
-        device = "cpu"
-    print(f"Device: {device}")
