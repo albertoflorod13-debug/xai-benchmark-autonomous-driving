@@ -127,6 +127,131 @@ def _normalised_auc(scores: list) -> float:
     arr = np.asarray(scores)
     return float((arr.sum() - arr[0] / 2 - arr[-1] / 2) / (arr.shape[0] - 1))
 
+def minimal_subset(scores: list, k_threshold: float) -> float:
+    """Fraction (in [0, 1]) of the Deletion curve's steps needed before `scores` first drops
+    below `k_threshold`. 0 if it starts already below; 1 if it never does (worst case: the
+    object survives full occlusion). Ported from the reference D-CRISP repo's own
+    metrics/utils.py::minimal_subset. Use k_threshold=conf_thres here: DetectorAsClassifier
+    already hard-floors `scores` to exactly 0.0 the moment the real confidence drops below
+    conf_thres (the box gets filtered out before it ever reaches best_matching_confidence), so
+    this is not an arbitrary substitute for the reference's own conf_thre-tied 0.7 -- it's the
+    same self-consistent choice adapted to our conf_thres=0.25.
+    """
+    arr = np.asarray(scores)
+    below = np.nonzero(arr < k_threshold)[0]
+    if len(below) == 0:
+        return 1.0
+    return float(below[0] / (len(arr) - 1))
+
+
+def _predict_at_k(x_batch: np.ndarray, order: np.ndarray, k: int, baseline: np.ndarray,
+                   classifier: DetectorAsClassifier, target_class_idx: int,
+                   channels: int, height: int, width: int, device: str) -> float:
+    """Confidence after deleting exactly the top-k pixels of `order`, evaluated at an
+    arbitrary k -- not tied to deletion_insertion_auc's step-multiple checkpoints.
+    Stateless: reconstructs the perturbed tensor from scratch each call, independent of
+    any running accumulator. Own code, this project; shared by refine_minimal_subset_k
+    and outside_box_deletion below.
+    """
+    x_flat = x_batch.reshape(channels, height * width).copy()
+    baseline_flat = baseline.reshape(channels, height * width)
+    idx = order[:k]
+    x_flat[:, idx] = baseline_flat[:, idx]
+    x_input = torch.as_tensor(x_flat.reshape(1, channels, height, width),
+                               dtype=torch.float32, device=device)
+    return classifier(x_input)[0, target_class_idx].item()
+
+
+def refine_minimal_subset_k(x_batch: np.ndarray, heatmap: np.ndarray,
+                             classifier: DetectorAsClassifier, target_class_idx: int,
+                             k_lo: int, k_hi: int, conf_thres: float,
+                             del_baseline: str = "black", device: str = "cpu",
+                             tol: int = 1) -> int:
+    """Bisection refinement of the coarse (step-quantised) Min-Subset crossing point
+    down to pixel precision.
+
+    Own numerical method, this project: root-finding by bisection on
+    g(k) = confidence(k) - conf_thres, NOT on confidence(k) directly -- the sign change
+    required by bisection is guaranteed at the endpoints by construction of the coarse
+    bracket (k_lo: last coarse checkpoint with confidence >= conf_thres, so g(k_lo) >= 0;
+    k_hi: first coarse checkpoint with confidence < conf_thres, so g(k_hi) < 0), since
+    k_lo/k_hi come directly from minimal_subset's own crossing index on the SAME
+    deletion curve already computed by deletion_insertion_auc. This is the discrete
+    analogue of bisection: a binary search over the monotone predicate
+    P(k) = "confidence(k) < conf_thres", assumed locally monotone within [k_lo, k_hi]
+    (a window of at most `step` pixels from the coarse pass -- a much safer assumption
+    than global monotonicity of the whole curve). Guaranteed to converge in
+    ceil(log2(k_hi - k_lo)) evaluations, unlike Newton-Raphson (needs an analytic
+    derivative, which a black-box detector forward pass does not have, and has no
+    global convergence guarantee).
+
+    Args:
+        k_lo, k_hi: coarse bracket in pixel counts (NOT step indices), e.g.
+            k_lo = (i-1)*step, k_hi = i*step where i = minimal_subset's crossing index.
+        tol: stop once the bracket width is <= tol pixels (1 = pixel-exact).
+
+    Returns:
+        int, the refined k: the smallest pixel count in [k_lo, k_hi] for which
+        confidence(k) < conf_thres.
+    """
+    _, channels, height, width = x_batch.shape
+    order = np.argsort(-heatmap.reshape(-1))
+    baseline = _resolve_baseline(x_batch, del_baseline)
+    while k_hi - k_lo > tol:
+        k_mid = (k_lo + k_hi) // 2
+        score = _predict_at_k(x_batch, order, k_mid, baseline, classifier,
+                               target_class_idx, channels, height, width, device)
+        if score < conf_thres:
+            k_hi = k_mid
+        else:
+            k_lo = k_mid
+    return k_hi
+
+
+def rank_accuracy_at_k(heatmap: np.ndarray, box_mask: np.ndarray, k: int) -> dict:
+    """Relevance Rank Accuracy with k decoupled from
+    |box_mask|, reported both as box coverage and as selection precision.
+
+    Adapted from quantus.RelevanceRankAccuracy.evaluate_batch (quantus/metrics/
+    localisation/relevance_rank_accuracy.py): that implementation
+    hard-ties k = s_batch.sum() with no exposed k parameter. 
+    Own extension, this project: k is instead the exact causal
+    minimal-subset size from refine_minimal_subset_k, so the metric measures "of the
+    pixels causally necessary to sustain the detection, what fraction lies inside the
+    box" instead of "of the box-sized top-k pixels, what fraction lies inside the box".
+
+    Returns two variants, not one:
+      - "rank_accuracy_box" = |top-k ∩ box_mask| / |box_mask|. The original RRA formula,
+        denominator kept as |box_mask| (not k) -- a value of 1.0 means the whole box was
+        covered by the causally-necessary subset, a value < 1.0 with a generous k is
+        evidence of genuine spillover, not a denominator artifact.
+      - "rank_accuracy_precision" = |top-k ∩ box_mask| / k. Own extension, this project,
+        added after cross-method validation showed k varies by an order of magnitude across XAI
+        methods -- with "rank_accuracy_box" alone, a method with a much larger
+        k covers a small box almost by construction regardless of ranking quality, which
+        makes cross-method comparisons at very different k magnitudes favour the
+        larger-k method. "rank_accuracy_precision" is comparable regardless of k's
+        absolute size; "rank_accuracy_box" remains the right choice for the original,
+        single-method question ("what fraction of the box does the causal subset
+        cover?"). Report both, do not average them.
+
+    Args:
+        heatmap: (H, W) saliency map, same resolution/coordinate frame as box_mask
+            (letterboxed, since k comes from the letterboxed deletion curve).
+        box_mask: (H, W) boolean mask, same frame as heatmap.
+        k: number of top-ranked pixels to select, independent of |box_mask|.
+
+    Returns:
+        {"rank_accuracy_box": float, "rank_accuracy_precision": float}, both in [0, 1],
+        or both nan if the box is empty or k <= 0.
+    """
+    box_size = int(box_mask.sum())
+    if box_size == 0 or k <= 0:
+        return {"rank_accuracy_box": float("nan"), "rank_accuracy_precision": float("nan")}
+    ranked = np.argsort(-heatmap.reshape(-1))
+    hits = int(box_mask.reshape(-1)[ranked[:k]].sum())
+    return {"rank_accuracy_box": float(hits / box_size), "rank_accuracy_precision": float(hits / k)}
+
 
 def deletion_insertion_auc(model_as_classifier: DetectorAsClassifier, x_batch: np.ndarray,
                             heatmap: np.ndarray, target_class_idx: int, step: int = 1000,
@@ -141,9 +266,11 @@ def deletion_insertion_auc(model_as_classifier: DetectorAsClassifier, x_batch: n
         step: pixels perturbed per iteration.
 
     Returns:
-    {"deletion_auc": float, "insertion_auc": float} -- AUC of the target's confidence-score
-    curve (`_normalised_auc`: divided by the number of intervals so the result doesn't depend on step count. 
-    NOT divided by the object's original confidence), both curves evaluated over the SAME step count.
+    {"deletion_auc": float, "insertion_auc": float, "deletion_scores": list[float]} -- AUC of
+    the target's confidence-score curve (`_normalised_auc`: divided by the number of intervals
+    so the result doesn't depend on step count. NOT divided by the object's original
+    confidence), both curves evaluated over the SAME step count. `deletion_scores` is the raw
+    per-step curve (step 0 = original image), exposed for `minimal_subset`.
     """
     assert x_batch.shape[0] == 1, "one object (one image) at a time."
     _, channels, height, width = x_batch.shape
@@ -176,4 +303,62 @@ def deletion_insertion_auc(model_as_classifier: DetectorAsClassifier, x_batch: n
         insertion_scores.append(predict(ins_running))
 
     return {"deletion_auc": _normalised_auc(deletion_scores),
-            "insertion_auc": _normalised_auc(insertion_scores)}
+            "insertion_auc": _normalised_auc(insertion_scores),
+            "deletion_scores": deletion_scores}
+
+
+def outside_box_deletion(model_as_classifier: DetectorAsClassifier, x_batch: np.ndarray,
+                          heatmap: np.ndarray, box_mask: np.ndarray,
+                          target_class_idx: int, step: int = 1000,
+                          del_baseline: str = "black", device: str = "cpu") -> dict:
+    """Restricted variant of D-Deletion (see deletion_insertion_auc above): only pixels
+    OUTSIDE box_mask are ever perturbed; pixels inside the box are never touched.
+
+    Tests whether the detector's confidence causally depends on the context pixels the
+    heatmap ranks as important -- i.e. whether a heatmap's spillover beyond the target
+    box reflects genuine model use of context or is an artifact of the explainability method.
+
+    Own code, this project: reuses the exact perturbation/AUC machinery of
+    deletion_insertion_auc above, restricted to a
+    fixed pixel subset. Motivated by the documented finding that object detectors rely
+    on context beyond the target box.
+
+    CAUTION: a confidence drop here is consistent with genuine context use, but cannot
+    by itself rule out an out-of-distribution masking artifact -- deleting pixels
+    (inside or outside the box) creates inputs the detector never saw in training. Report as
+    suggestive causal evidence, not proof.
+
+    Args:
+        x_batch: (1, C, H, W) letterboxed input tensor.
+        heatmap: (H, W) saliency map, same letterboxed resolution as x_batch.
+        box_mask: (H, W) boolean mask, True inside the target box, in the same
+            letterboxed frame as heatmap/x_batch -- build with
+            common.letterbox_map_box + build_box_mask, not the original-image-space
+            mask used elsewhere for RRA/EBPG.
+
+    Returns:
+        {"outside_box_deletion_auc": float, "outside_box_confidence_drop": float}
+        (drop = score at step 0 minus score after the last outside-box pixel removed).
+    """
+    _, channels, height, width = x_batch.shape
+    outside_pixels = np.flatnonzero(~box_mask.reshape(-1))
+    ranked_outside = outside_pixels[np.argsort(-heatmap.reshape(-1)[outside_pixels])]
+    n_steps = math.ceil(len(ranked_outside) / step)
+
+    def predict(flat_array: np.ndarray) -> float:
+        x_input = torch.as_tensor(flat_array.reshape(1, channels, height, width),
+                                   dtype=torch.float32, device=device)
+        return model_as_classifier(x_input)[0, target_class_idx].item()
+
+    x_flat = x_batch.reshape(channels, height * width)
+    running = x_flat.copy()
+    baseline = _resolve_baseline(x_batch, del_baseline).reshape(channels, height * width)
+
+    scores = [predict(running)]  # step 0: original image, nothing removed
+    for i in range(n_steps):
+        idx = ranked_outside[i * step: (i + 1) * step]
+        running[:, idx] = baseline[:, idx]
+        scores.append(predict(running))
+
+    return {"outside_box_deletion_auc": _normalised_auc(scores),
+            "outside_box_confidence_drop": scores[0] - scores[-1]}

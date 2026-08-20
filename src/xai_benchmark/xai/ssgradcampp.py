@@ -24,6 +24,19 @@ from xai_benchmark.xai.common import unletterbox_map
 
 EPS_DEFAULT = 1e-8
 
+class AnchorNotFoundError(RuntimeError):
+    """Raised by `_locate_anchor` when no dense anchor reproduces the target detection within
+    `iou_match_thres`. Carries the best same-class IoU actually found, purely as a diagnostic
+    (never used to relax the matching decision itself), lets evaluate_perturbation_stability
+    (evaluation/stability.py) record how close a rejected perturbed sample got to the threshold."""
+
+    def __init__(self, best_iou_same_class: float, n_same_class: int):
+        self.best_iou_same_class = best_iou_same_class
+        self.n_same_class = n_same_class
+        super().__init__(
+            f"No anchor reproduces the given detection "
+            f"(best IoU among {n_same_class} same-class candidates: {best_iou_same_class:.4f})."
+        )
 
 @dataclass
 class SSGradCAMPPResult:
@@ -100,7 +113,7 @@ class SSGradCAMPP:
 
     def _register_hooks(self):
         for s in range(self.num_scales):
-            branch = self.detect_head.cv3[s]  # cv3[s][1]: penultima conv (capa objetivo, criterio que usa G-CAME en YOLOX)
+            branch = self.detect_head.cv3[s]  
             self._hook_handles.append(branch[1].register_forward_hook(self._make_activation_hook(s)))
             self._hook_handles.append(branch[2].register_forward_hook(self._make_logit_hook(s))) 
 
@@ -142,9 +155,9 @@ class SSGradCAMPP:
         candidates = ((ious >= self.iou_match_thres) & (pred_class == target_class_idx)).nonzero(as_tuple=True)[0]
 
         if len(candidates) == 0:
-            raise RuntimeError(
-                "No anchor reproduces the given detection."
-            )
+            same_class_mask = pred_class == target_class_idx
+            best_iou = float(ious[same_class_mask].max()) if same_class_mask.any() else float("nan")
+            raise AnchorNotFoundError(best_iou, int(same_class_mask.sum()))
         if len(candidates) > 1:
             best = class_probs[candidates, target_class_idx].argmax()
             return int(candidates[best])
