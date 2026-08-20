@@ -1,0 +1,43 @@
+# D-CRISP adapted to YOLO26.
+# Official repo: https://github.com/aklein1995/D-CRISP.
+
+checkpoint: models/finetuned/best.pt
+
+data:
+  val_images_dir: data/kitti/images/val
+  val_labels_dir: data/kitti/labels/val
+
+detection:
+  conf_thres: 0.25       # same frozen value as ssgradcampp.yaml/tta_uq.yaml
+  iou_thres_nms: 0.5     # idem
+
+matching:
+  iou_thres_gt: 0.5   # same criteria and threshold as ssgradcampp.yaml/tta_uq.yaml
+
+mask:
+  n_masks: 1000    
+  alpha: 0.50      # Best value in the paper's own ablation (alpha in {0.25, 0.50, 0.75})
+  resolution: 16    
+  p1: 0.25          # area/cell-visibility ratio, shared by RISE and SLIC masks (idem)
+  num_levels: 5     # of the 6 predefined SLIC granularities [50,100,200,400,800,1600]
+  gpu_batch: 50     
+
+device: cuda
+
+output:
+  heatmaps_dir: results/final/dcrisp/heatmaps
+  object_level_csv: results/final/dcrisp/object_level.csv
+  save_every: 100
+
+evaluation:
+  eval_metrics_csv: results/final/dcrisp/eval_metrics.csv
+  step: 5000                       
+  faithfulness_sample_size: 999999  
+  seed: 0
+  save_every: 100
+
+  stability:
+    radius: 0.1              
+    n_samples: 5               
+    image_sample_size: 300      
+    seed: 1
