@@ -2,7 +2,7 @@
 # Explanations for Object Detectors via Weighted Combination of Gradient Maps, 
 # https://www.sciencedirect.com/science/article/pii/S1077314226000251) adapted to YOLO26.
 
-checkpoint: results/runs/detect/finetune_stage2_unfrozen/weights/best.pt
+checkpoint: models/finetuned/best.pt
 
 data:
   val_images_dir: data/kitti/images/val
@@ -31,9 +31,16 @@ output:
   save_every: 100  
 
 evaluation:
-  eval_metrics_csv: results/ssgradcampp/eval_metrics.csv
+  eval_metrics_csv: results/final/ssgradcampp/eval_metrics.csv
   step: 5000
   faithfulness_sample_size: 999999   
    
   seed: 0
   save_every: 100
+
+  stability:
+    iou_match_thres: 0.90
+    radius: 0.1
+    n_samples: 20
+    image_sample_size: 999999
+    seed: 1
