@@ -24,6 +24,8 @@ data/kitti/images/
 data/kitti/labels/
 data/kitti/*.cache
 data/kitti/kitti_local.yaml
+data/data_object_calib/
+data/data_object_label_2/
 
 # Checkpoints Jupyter de notebooks exploratorios
 notebooks/.ipynb_checkpoints/
@@ -33,6 +35,10 @@ notebooks/.ipynb_checkpoints/
 results/ssgradcampp/*.csv
 results/ssgradcampp/heatmaps/
 results/tta_uq/*.csv
+
+# D-CRISP outputs and result grids (reproducible via scripts/run_dcrisp_explanations.py
+# and scripts/run_evaluation.py, same criterion as results/ssgradcampp/)
+results/
 
 # Pesos y checkpoints de modelos -- no se versionan por defecto (grandes y
 # reproducibles a partir de la config), salvo el checkpoint final ya entrenado,
