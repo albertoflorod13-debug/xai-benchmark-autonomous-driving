@@ -44,10 +44,12 @@ from xai_benchmark.xai.dcrisp import DCRISP
 from xai_benchmark.xai.ssgradcampp import SSGradCAMPP
 from xai_benchmark.detection.yolo_head import get_one2many_predictions
 from xai_benchmark.uncertainty.tta import box_iou
+from xai_benchmark.xai.random_explainer import RandomExplainer
 
 METHOD_CONFIGS = {
     "ssgradcampp": REPO_ROOT / "configs" / "xai" / "ssgradcampp.yaml",
     "dcrisp": REPO_ROOT / "configs" / "xai" / "dcrisp.yaml",
+    "random_baseline": REPO_ROOT / "configs" / "xai" / "random_baseline.yaml",
 }
 
 EVAL_FIELDS = [
@@ -63,6 +65,10 @@ EVAL_FIELDS = [
     "stability_n_rejected_representation",
 ]
 
+RANDOM_BASELINE_EXTRA_FIELDS = [
+    "stability_n_valid_n5", "stability_n_rejected_gate_n5",
+    "stability_max_sensitivity_n5", "stability_ris_n5", "stability_ros_n5",
+]
 
 def load_config(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -131,12 +137,18 @@ def main():
             checkpoint, device=device, iou_match_thres=stability_cfg["iou_match_thres"],
             eps=cfg["numerics"]["eps"],
         )
-    else:  # dcrisp
+    elif args.method == "dcrisp":
         stability_explainer = DCRISP.from_checkpoint(
             checkpoint, device=device, conf_thres=conf_thres, iou_thres_nms=iou_thres_nms,
             gpu_batch=cfg["mask"]["gpu_batch"], n_masks=cfg["mask"]["n_masks"],
             alpha=cfg["mask"]["alpha"], resolution=cfg["mask"]["resolution"],
             p1=cfg["mask"]["p1"], num_levels=cfg["mask"]["num_levels"],
+        )
+    else:  # random_baseline -- RRS still needs a real SSGradCAMPP instance, only for its
+           # anchor-locating + activation-hook machinery (stability.ssgradcampp_representation),
+           # never for its own heatmap output
+        rrs_representation_explainer = SSGradCAMPP.from_checkpoint(
+            checkpoint, device=device, iou_match_thres=stability_cfg["iou_match_thres"],
         )
 
     df = pd.read_csv(object_csv_path, dtype={"image_id": str})
@@ -171,7 +183,8 @@ def main():
 
     file_mode = "a" if eval_csv_path.exists() else "w"
     with open(eval_csv_path, file_mode, newline="", encoding="utf-8") as f_out:
-        writer = csv.DictWriter(f_out, fieldnames=EVAL_FIELDS)
+        fieldnames = EVAL_FIELDS + RANDOM_BASELINE_EXTRA_FIELDS if args.method == "random_baseline" else EVAL_FIELDS
+        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
         if file_mode == "w":
             writer.writeheader()
 
@@ -239,6 +252,13 @@ def main():
                         "stability_rrs": "", "stability_n_valid_rrs": "",
                         "stability_n_rejected_representation": "",
                     }
+
+                    if args.method == "random_baseline":
+                        out_row.update({
+                            "stability_n_valid_n5": "", "stability_n_rejected_gate_n5": "",
+                            "stability_max_sensitivity_n5": "", "stability_ris_n5": "",
+                            "stability_ros_n5": "",
+                        })
 
                     if idx in faithfulness_idx:
                         classifier = detection_metrics.DetectorAsClassifier(
@@ -311,7 +331,7 @@ def main():
                                     conf_thres=conf_thres, iou_thres_nms=iou_thres_nms,
                                     iou_thres_gt=iou_thres_gt, seed=obj_seed,
                                 )
-                            else:  # ssgradcampp
+                            elif args.method == "ssgradcampp":
                                 result0 = stability_explainer.explain(
                                     img_bgr, target_box, target_class, margin=margin)
                                 heatmap0 = detection_metrics.reconstruct_heatmap_letterboxed(
@@ -336,6 +356,46 @@ def main():
                                     iou_thres_gt=iou_thres_gt, seed=obj_seed,
                                     representation_fn=representation_fn, representation=representation0,
                                 )
+                            else:  # random_baseline -- two runs (n=5, n=20), same obj_seed
+                                   # for the perturbed images in both, so each is compared
+                                   # against the real method that actually used that
+                                   # n_samples (see plan_fase_final.md, Section 9)
+                                noise_seed = stability_cfg["noise_seed"]
+                                heatmap0 = RandomExplainer(seed=(noise_seed, idx, 0)).heatmap(letterbox_shape)
+                                representation0 = stability.ssgradcampp_representation(
+                                    rrs_representation_explainer, img_bgr, orig_shape,
+                                    target_box, target_class)
+
+                                def representation_fn(img_perturbed, _b=target_box, _c=target_class):
+                                    return stability.ssgradcampp_representation(
+                                        rrs_representation_explainer, img_perturbed, orig_shape, _b, _c)
+
+                                explainer_n5 = RandomExplainer(seed=(noise_seed, idx, 1))
+                                stab_n5 = stability.evaluate_perturbation_stability(
+                                    lambda img_perturbed: explainer_n5.heatmap(letterbox_shape),
+                                    model_dense, model_prep, img_bgr, orig_shape,
+                                    target_box, target_class, heatmap0,
+                                    n_samples=5, radius=stability_radius,
+                                    conf_thres=conf_thres, iou_thres_nms=iou_thres_nms,
+                                    iou_thres_gt=iou_thres_gt, seed=obj_seed,
+                                )
+
+                                explainer_n20 = RandomExplainer(seed=(noise_seed, idx, 2))
+                                stab = stability.evaluate_perturbation_stability(
+                                    lambda img_perturbed: explainer_n20.heatmap(letterbox_shape),
+                                    model_dense, model_prep, img_bgr, orig_shape,
+                                    target_box, target_class, heatmap0,
+                                    n_samples=stability_n_samples, radius=stability_radius,
+                                    conf_thres=conf_thres, iou_thres_nms=iou_thres_nms,
+                                    iou_thres_gt=iou_thres_gt, seed=obj_seed,
+                                    representation_fn=representation_fn, representation=representation0,
+                                )
+
+                                out_row["stability_n_valid_n5"] = stab_n5["n_valid"]
+                                out_row["stability_n_rejected_gate_n5"] = stab_n5["n_rejected_gate"]
+                                out_row["stability_max_sensitivity_n5"] = stab_n5["max_sensitivity"]
+                                out_row["stability_ris_n5"] = stab_n5["relative_input_stability"]
+                                out_row["stability_ros_n5"] = stab_n5["relative_output_stability"]
 
                             out_row["stability_n_valid"] = stab["n_valid"]
                             out_row["stability_n_rejected_gate"] = stab["n_rejected_gate"]
@@ -343,7 +403,7 @@ def main():
                             out_row["stability_max_sensitivity"] = stab["max_sensitivity"]
                             out_row["stability_ris"] = stab["relative_input_stability"]
                             out_row["stability_ros"] = stab["relative_output_stability"]
-                            if args.method == "ssgradcampp":
+                            if args.method in ("ssgradcampp", "random_baseline"):
                                 out_row["stability_rrs"] = stab["relative_representation_stability"]
                                 out_row["stability_n_valid_rrs"] = stab["n_valid_rrs"]
                                 out_row["stability_n_rejected_representation"] = stab["n_rejected_representation"]

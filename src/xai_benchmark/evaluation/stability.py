@@ -116,6 +116,7 @@ def evaluate_perturbation_stability(
     eps_min: float = EPS_MIN, seed: Optional[int] = None,
     representation_fn: Optional[Callable[[np.ndarray], Optional[np.ndarray]]] = None,
     representation: Optional[np.ndarray] = None,
+    return_raw: bool = False,
 ) -> dict:
     """Max-Sensitivity + RIS + ROS (and RRS, if `representation_fn` is given) for one target
     object, method-agnostic via `explain_fn`.
@@ -151,6 +152,16 @@ def evaluate_perturbation_stability(
         n_rejected_representation and rejected_representation_best_ious (same pattern as
         explain_fn's, for representation_fn's failures). All metric values are NaN if the
         corresponding sample count is 0.
+
+        If `return_raw` is True, also includes the per-repetition lists `sensitivities`,
+        `ris_values`, `ros_values`, `rrs_values` (this last one empty if `representation_fn`
+        was not given) -- for diagnostic inspection of individual repetitions. NOT used to
+        derive the random-noise baseline's n=5/n=20 aggregates: those come from two separate
+        calls (n_samples=5 and n_samples=20, same `seed`) rather than slicing a single run's
+        raw lists, precisely because these lists only contain the repetitions that survived
+        the gate/explain_fn checks (compacted, not indexed by loop iteration) -- see
+        run_evaluation.py's random_baseline branch. False by default: does not change the
+        result dict, or any behaviour, for existing callers (D-CRISP, SSGrad-CAM++).
     """
 
     rng = np.random.default_rng(seed)
@@ -214,6 +225,11 @@ def evaluate_perturbation_stability(
         result["n_valid_rrs"] = len(rrs_values)
         result["n_rejected_representation"] = len(rejected_representation_best_ious)
         result["rejected_representation_best_ious"] = rejected_representation_best_ious
+    if return_raw:
+        result["sensitivities"] = sensitivities
+        result["ris_values"] = ris_values
+        result["ros_values"] = ros_values
+        result["rrs_values"] = rrs_values
     return result
 
 

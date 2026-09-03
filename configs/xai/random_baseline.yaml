@@ -1,0 +1,56 @@
+# Random-noise baseline: an "explainer" that ignores the image and the target object,
+# generating i.i.d. Uniform(0,1) heatmaps. Protocol follows Skliarov, El Shawi, Dhaoui & Ahmed, "A comparative
+# evaluation of explainability techniques for image data", Scientific Reports 15:41898
+# (2025): "a random saliency map generator that produces noise-based attribution maps
+# normalized to [0, 1]... generated with the same spatial resolution and normalization
+# settings as the evaluated methods." 
+
+checkpoint: models/finetuned/best.pt
+
+data:
+  val_images_dir: data/kitti/images/val
+  val_labels_dir: data/kitti/labels/val
+
+detection:
+  conf_thres: 0.25       # same frozen value as dcrisp.yaml/ssgradcampp.yaml/tta_uq.yaml
+  iou_thres_nms: 0.5     # idem
+
+matching:
+  iou_thres_gt: 0.5   # same criteria and threshold as dcrisp.yaml/ssgradcampp.yaml
+
+mask:
+  margin: 0   # not used by RandomExplainer itself; kept only because run_evaluation.py
+              # reads cfg["mask"]["margin"] unconditionally for every --method
+
+noise:
+  seed: 2   # RandomExplainer instance used by the (separate) heatmap-generation script that
+            # produces heatmaps_dir/*.npz for the fidelity/localisation metrics -- one draw
+            # per object, deliberately distinct from every other seed in this project so far
+            # (dcrisp.yaml/ssgradcampp.yaml use 0/1; this file adds 2/3 below)
+
+device: cuda
+
+output:
+  heatmaps_dir: results/final/random_baseline/heatmaps
+  object_level_csv: results/final/random_baseline/object_level.csv
+  save_every: 100
+
+evaluation:
+  eval_metrics_csv: results/final/random_baseline/eval_metrics.csv
+  step: 5000
+  faithfulness_sample_size: 999999   # full population, matching dcrisp.yaml/ssgradcampp.yaml
+  seed: 0 
+  save_every: 100
+  stability:
+    iou_match_thres: 0.90   # only for RRS's representation extraction, which still needs a
+                             # real SSGradCAMPP instance
+    radius: 0.1
+    n_samples: 20      
+    image_sample_size: 999999   # full population (1493 images), matching SSGrad-CAM++'s
+                                 # own scope, not D-CRISP's 300-image subsample
+    seed: 1   # which images enter the stability sample (moot here, same reasoning as
+              # evaluation.seed above, since image_sample_size already covers every image)
+    noise_seed: 4   # RandomExplainer instance used inside run_evaluation.py's stability
+                     # loop -- generates a fresh, independent draw on every call, once per
+                     # perturbation repetition (never the same draw reused across
+                     # repetitions; see random_explainer.py)
