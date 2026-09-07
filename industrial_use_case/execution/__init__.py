@@ -1,0 +1,1 @@
+"""Execution-time components: conflict detection, replanning session state, demo orchestration."""

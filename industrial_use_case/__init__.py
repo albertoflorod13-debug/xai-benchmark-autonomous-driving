@@ -1,0 +1,1 @@
+"""Industrial use case: LLM + RRT-Connect path planning with LOCO-based conflict detection and XAI reporting."""
