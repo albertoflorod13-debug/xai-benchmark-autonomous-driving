@@ -4,8 +4,9 @@ run_demo.py
 Runs one full offline-plan + online-execution demo: plans an initial route
 from start to target, then walks it step by step, sampling a scenario image
 at every step and checking it for a conflict. A conflict abandons the rest
-of the active route and triggers a replan from the current position. The
-run ends when the target is reached or the replan budget is exhausted.
+of the active route, permanently blocks the point just ahead of it with a
+small obstacle, and triggers a replan from the current position. The run
+ends when the target is reached or the replan budget is exhausted.
 """
 
 import glob
@@ -23,7 +24,7 @@ load_dotenv(REPO_ROOT / ".env")
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from industrial_use_case.planning.obstacles_2d import ObstacleMap
+from industrial_use_case.planning.obstacles_2d import ObstacleMap, box_ahead_of
 from industrial_use_case.planning.rrt_planner import RRTConnectPlanner
 from industrial_use_case.planning.prompt_builder import build_system_prompt
 from industrial_use_case.planning.llm_rrt_planner import set_llm_config, plan_full_route, RouteResult
@@ -45,7 +46,12 @@ COLLISION_RESOLUTION = 0.1
 MAX_SAMPLES = 5000
 MAX_LLM_RETRIES = 6
 MAX_TOTAL_REPLANS = 5
-SEED = 42
+SEED = 100
+
+# ── Conflict-triggered obstacle: blocks the spot just past a detected object,
+# never the object's own position (see box_ahead_of's docstring) ───────────
+CONFLICT_OBSTACLE_SIZE = 0.5
+CONFLICT_OBSTACLE_DISTANCE = STEP_SIZE
 
 LOCO_VAL_IMAGES = REPO_ROOT / "data" / "LOCO" / "images" / "val"
 LOCO_CHECKPOINT = REPO_ROOT / "models" / "finetuned_loco" / "best.pt"
@@ -79,12 +85,13 @@ def _conflict_to_dict(conflict: ConflictResult) -> dict:
     }
 
 
-def _session_to_dict(session: DemoSession) -> dict:
+def _session_to_dict(session: DemoSession, obstacle_map: ObstacleMap) -> dict:
     return {
         "start": list(session.start),
         "target": list(session.target),
         "room_bounds": list(ROOM_BOUNDS),
         "obstacles": [list(o) for o in OBSTACLES],
+        "conflict_boxes": [list(b) for b in obstacle_map.boxes[len(OBSTACLES):]],
         "max_total_replans": session.max_total_replans,
         "final_position": list(session.current_position),
         "num_replans": session.num_replans,
@@ -121,7 +128,7 @@ def main() -> None:
         obstacle_map, ROOM_BOUNDS, step_size=STEP_SIZE, collision_resolution=COLLISION_RESOLUTION,
         max_samples=MAX_SAMPLES, rng=random.Random(SEED),
     )
-    system_prompt = build_system_prompt(ROOM_BOUNDS, OBSTACLES, STEP_SIZE)
+    system_prompt = build_system_prompt(ROOM_BOUNDS, obstacle_map.boxes, STEP_SIZE)
 
     model_dense, model_prep, device = load_conflict_model(str(LOCO_CHECKPOINT))
 
@@ -140,7 +147,7 @@ def main() -> None:
         remaining_path = route.path[1:]
         conflict_triggered = False
 
-        for position in remaining_path:
+        for i, position in enumerate(remaining_path):
             step_idx = session.next_step_index()
             session.record_step(position)
 
@@ -150,15 +157,23 @@ def main() -> None:
             if conflict.triggered:
                 session.record_conflict(step_idx, position, image_path, conflict)
                 conflict_triggered = True
+                previous_position = route.path[i]
                 class_name = CLASS_NAMES.get(conflict.target_class, "an unrecognized object")
                 print(f"Step {step_idx}: conflict ({class_name}) at {position} ({image_path})")
                 break
 
         if conflict_triggered:
+            fallback_direction = (TARGET[0] - position[0], TARGET[1] - position[1])
+            box = box_ahead_of(position, previous_position, CONFLICT_OBSTACLE_SIZE,
+                                CONFLICT_OBSTACLE_DISTANCE, fallback_direction)
+            obstacle_map.add_box(box)
+
             if session.budget_exhausted():
                 session.finished = True
                 session.reached_target = False
                 break
+
+            system_prompt = build_system_prompt(ROOM_BOUNDS, obstacle_map.boxes, STEP_SIZE)
             initial_context = (
                 f"A {class_name} was detected right at the robot's current position "
                 f"{session.current_position}. Do not propose heading back to this exact "
@@ -177,7 +192,7 @@ def main() -> None:
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(_session_to_dict(session), f, indent=2, ensure_ascii=False)
+        json.dump(_session_to_dict(session, obstacle_map), f, indent=2, ensure_ascii=False)
 
     print(f"Demo finished: reached_target={session.reached_target}, "
           f"steps={session.step_counter}, replans={session.num_replans}, "

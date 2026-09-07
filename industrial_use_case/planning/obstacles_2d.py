@@ -20,7 +20,7 @@ Box = Tuple[float, float, float, float]
 
 class ObstacleMap:
     def __init__(self, boxes: List[Box]):
-        self.boxes = boxes
+        self.boxes = list(boxes)
         p = index.Property()
         p.dimension = 2
         if boxes:
@@ -37,6 +37,13 @@ class ObstacleMap:
             if not self.is_point_free(point):
                 return False
         return True
+
+    def add_box(self, box: Box) -> None:
+        """Inserts a new obstacle into the live index -- every RRTConnectPlanner
+        or point/segment check sharing this ObstacleMap instance sees it
+        immediately, since rtree's index supports insertion after construction."""
+        self.index.insert(len(self.boxes), box)
+        self.boxes.append(box)
 
 
 def _points_along_segment(start, end, resolution: float) -> Iterable[Tuple[float, float]]:
@@ -100,3 +107,26 @@ def compute_local_free_rects(obstacle_map: "ObstacleMap", point: Tuple[float, fl
          "y_range": [round(b[1], 2), round(b[3], 2)]}
         for b in boxes[:max_rects]
     ]
+
+def box_ahead_of(point: Tuple[float, float], previous_point: Tuple[float, float],
+                  size: float, distance: float,
+                  fallback_direction: Tuple[float, float]) -> "Box":
+    """
+    Axis-aligned size x size box centered `distance` ahead of `point`, along the
+    direction from `previous_point` to `point`. Falls back to `fallback_direction`
+    when the two coincide (degenerate direction, e.g. a repeated path point).
+
+    Callers must keep `distance > size / 2` so the box never overlaps `point`
+    itself -- otherwise a planner rooted at `point` could never leave it, since
+    every extension out of a tree's root is segment-checked starting from that
+    exact point.
+    """
+    dx, dy = point[0] - previous_point[0], point[1] - previous_point[1]
+    norm = (dx ** 2 + dy ** 2) ** 0.5
+    if norm < 1e-9:
+        dx, dy = fallback_direction
+        norm = (dx ** 2 + dy ** 2) ** 0.5
+    ux, uy = dx / norm, dy / norm
+    cx, cy = point[0] + ux * distance, point[1] + uy * distance
+    half = size / 2
+    return (cx - half, cy - half, cx + half, cy + half)

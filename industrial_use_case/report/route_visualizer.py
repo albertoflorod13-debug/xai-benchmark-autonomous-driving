@@ -14,6 +14,7 @@ from typing import List, Tuple
 from industrial_use_case.execution.conflict_checker import CLASS_NAMES
 
 Point = Tuple[float, float]
+Box = Tuple[float, float, float, float]
 
 ROBOT_SPEED = 0.5  # m/s -- constant-speed animation timing
 
@@ -92,6 +93,20 @@ def _conflict_trace(marker: dict, show: bool, showlegend: bool) -> dict:
     }
 
 
+def _conflict_box_trace(box: Box, show: bool, showlegend: bool) -> dict:
+    """Small square obstacle inserted at a conflict -- same visual language as the
+    static obstacles (filled rectangle), in yellow to distinguish it as a
+    conflict-triggered addition rather than the scenario's original shelving."""
+    x0, y0, x1, y1 = box
+    xs = [x0, x1, x1, x0, x0] if show else []
+    ys = [y0, y0, y1, y1, y0] if show else []
+    return {
+        "type": "scatter", "x": xs, "y": ys, "mode": "lines", "fill": "toself",
+        "fillcolor": "rgba(255,221,0,0.55)", "line": {"color": "#c9a400", "width": 1},
+        "name": "Conflict obstacle", "showlegend": showlegend, "hoverinfo": "skip",
+    }
+
+
 def _route_layout(room_bounds: Tuple[float, float], extra: dict = None) -> dict:
     W, D = room_bounds
     layout = {
@@ -154,8 +169,9 @@ def _frame_duration_ms(walked_path: List[Point], speed: float = ROBOT_SPEED) -> 
 
 
 def _build_static_figure(room_bounds, obstacles, start, target, reached,
-                          walked_path, abandoned_segments, conflict_markers) -> dict:
+                          walked_path, abandoned_segments, conflict_markers, conflict_boxes) -> dict:
     data = _background_traces(room_bounds, obstacles, start, target, reached)
+    data += [_conflict_box_trace(box, True, k == 0) for k, box in enumerate(conflict_boxes)]
     data += [_abandoned_trace(seg["points"], True, k == 0) for k, seg in enumerate(abandoned_segments)]
     data += _walked_path_traces(walked_path)
     data += [_conflict_trace(m, True, k == 0) for k, m in enumerate(conflict_markers)]
@@ -163,15 +179,17 @@ def _build_static_figure(room_bounds, obstacles, start, target, reached,
 
 
 def _build_animation_figure(room_bounds, obstacles, start, target, reached,
-                             walked_path, abandoned_segments, conflict_markers) -> dict:
+                             walked_path, abandoned_segments, conflict_markers, conflict_boxes) -> dict:
     background = _background_traces(room_bounds, obstacles, start, target, reached)
     n_bg = len(background)
     idx_abandoned = n_bg + 2
     idx_conflict = idx_abandoned + len(abandoned_segments)
+    idx_conflict_box = idx_conflict + len(conflict_markers)
 
     initial = background + _robot_frame_traces(walked_path, up_to=0)
     initial += [_abandoned_trace(seg["points"], False, k == 0) for k, seg in enumerate(abandoned_segments)]
     initial += [_conflict_trace(m, False, k == 0) for k, m in enumerate(conflict_markers)]
+    initial += [_conflict_box_trace(box, False, k == 0) for k, box in enumerate(conflict_boxes)]
 
     frames, slider_steps = [], []
     for i in range(len(walked_path)):
@@ -183,6 +201,9 @@ def _build_animation_figure(room_bounds, obstacles, start, target, reached,
         for k, m in enumerate(conflict_markers):
             frame_data.append(_conflict_trace(m, i >= m["switch_frame"], k == 0))
             frame_traces.append(idx_conflict + k)
+        for k, box in enumerate(conflict_boxes):
+            frame_data.append(_conflict_box_trace(box, i >= conflict_markers[k]["switch_frame"], k == 0))
+            frame_traces.append(idx_conflict_box + k)
         frames.append({"name": str(i), "data": frame_data, "traces": frame_traces})
         slider_steps.append({
             "label": str(i), "method": "animate",
@@ -248,14 +269,15 @@ function showRouteTab(which) {{
 def build_route_visualization_html(session: dict) -> str:
     room_bounds = tuple(session["room_bounds"])
     obstacles = [tuple(o) for o in session["obstacles"]]
+    conflict_boxes = [tuple(b) for b in session["conflict_boxes"]]
     start, target, reached = session["start"], session["target"], session["reached_target"]
 
     walked_path, abandoned_segments, conflict_markers = _reconstruct_route(session)
 
     static_fig = _build_static_figure(room_bounds, obstacles, start, target, reached,
-                                       walked_path, abandoned_segments, conflict_markers)
+                                       walked_path, abandoned_segments, conflict_markers, conflict_boxes)
     anim_fig = _build_animation_figure(room_bounds, obstacles, start, target, reached,
-                                        walked_path, abandoned_segments, conflict_markers)
+                                        walked_path, abandoned_segments, conflict_markers, conflict_boxes)
 
     return _FRAGMENT_TEMPLATE.format(
         static_data=json.dumps(static_fig["data"]), static_layout=json.dumps(static_fig["layout"]),

@@ -1,6 +1,6 @@
 # Industrial Use Case: LLM + RRT-Connect Path Planning with Vision-Based Replanning and XAI Reporting
 
-A robot navigates a synthetic 2D warehouse from a start point to a target. An LLM proposes coarse waypoints, RRT-Connect turns them into a physically valid route, and the robot walks that route step by step. At every step, a YOLO26 detector fine-tuned on the LOCO logistics dataset checks a sampled warehouse image for a nearby obstacle; if one is found, the robot abandons the rest of its route and the LLM replans from its current position. Once the run ends, every detected conflict is explained with two explainability methods (D-CRISP and SSGrad-CAM++), and the whole run is rendered into a single HTML report with an interactive 2D route view, a constant-speed animation, and a printable PDF variant.
+A robot navigates a synthetic 2D warehouse from a start point to a target. An LLM proposes coarse waypoints, RRT-Connect turns them into a physically valid route, and the robot walks that route step by step. At every step, a YOLO26 detector fine-tuned on the LOCO logistics dataset checks a sampled warehouse image for a nearby obstacle; if one is found, the robot abandons the rest of its route, permanently blocks the space just past it with a small inserted obstacle, and the LLM replans from its current position. Once the run ends, every detected conflict is explained with two explainability methods (D-CRISP and SSGrad-CAM++), and the whole run is rendered into a single HTML report with an interactive 2D route view, a constant-speed animation, and a printable PDF variant.
 
 This module reuses the detection and explainability code already used throughout the rest of the project (`xai_benchmark`): the same dense YOLO head for inference, and the same D-CRISP / SSGrad-CAM++ implementations and fidelity/localization metrics.
 
@@ -9,7 +9,7 @@ This module reuses the detection and explainability code already used throughout
 The system combines four layers in a closed feedback loop:
 
 - **LLM (Groq, `openai/gpt-oss-120b`)** — proposes a short sequence of guidepost waypoints (2 to 5) from the current position to the target.
-- **Obstacle map (`ObstacleMap`)** — a hard geometric constraint. Warehouse shelving is modelled as axis-aligned boxes indexed in an R-tree; every LLM-proposed waypoint is checked (`is_point_free`) before RRT-Connect runs. A rejected waypoint gets a locally accurate "nearby free zones" hint (up to 3 rectangles closest to the rejected point), so the LLM can immediately propose a valid alternative instead of repeating the same mistake.
+- **Obstacle map (`ObstacleMap`)** — a hard geometric constraint. Warehouse shelving is modelled as axis-aligned boxes indexed in an R-tree; every LLM-proposed waypoint is checked (`is_point_free`) before RRT-Connect runs. A rejected waypoint gets a locally accurate "nearby free zones" hint (up to 3 rectangles closest to the rejected point), so the LLM can immediately propose a valid alternative instead of repeating the same mistake. It also grows at runtime: every detected conflict permanently adds a small obstacle to this same map (see "Conflict-triggered obstacles" below), so a resolved conflict is never walked into again later in the run.
 - **RRT-Connect planner** — grows two trees, one from the current position and one from the target waypoint, and repeatedly tries to connect them directly through free space. It only answers "is there a valid path", with no notion of path cost; every candidate step is filtered through the same obstacle map.
 - **YOLO26 conflict detector (fine-tuned on LOCO)** — at every physical step of the accepted route, a real LOCO validation image is sampled and run through the detector. A detection counts as a conflict when it is both close (relative box area at or above the 99th percentile of LOCO's annotated instances) and centered (box center within the middle 30% of the frame on both axes).
 
@@ -40,6 +40,7 @@ graph LR
     Obs -.->|rejected: inside obstacle| LLM
     RRT -.->|no path found| LLM
     Det -.->|conflict detected: replan from here| LLM
+    Det -.->|conflict detected: inserts an obstacle ahead| Obs
 
     style Start fill:#ffffff,stroke:#333,stroke-width:2px
     style End fill:#ffffff,stroke:#333,stroke-width:2px
@@ -53,9 +54,10 @@ graph LR
     linkStyle 8 stroke:#d32f2f,stroke-width:2px,stroke-dasharray: 5 5
     linkStyle 9 stroke:#d32f2f,stroke-width:2px,stroke-dasharray: 5 5
     linkStyle 10 stroke:#d32f2f,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 11 stroke:#d32f2f,stroke-width:2px,stroke-dasharray: 5 5
 ```
 
-*Figure 1: The LLM proposes coarse waypoints, the Obstacle Map performs a hard physical check before RRT-Connect even runs, RRT-Connect plans each segment (filtering every candidate through the same obstacle map), and the execution loop walks the accepted route while a YOLO26 detector checks each step for a conflict. Any rejection — physical, planning, or a detected conflict — feeds a structured reason back to the LLM for re-planning.*
+*Figure 1: The LLM proposes coarse waypoints, the Obstacle Map performs a hard physical check before RRT-Connect even runs, RRT-Connect plans each segment (filtering every candidate through the same obstacle map), and the execution loop walks the accepted route while a YOLO26 detector checks each step for a conflict. Any rejection — physical, planning, or a detected conflict — feeds a structured reason back to the LLM for re-planning; a detected conflict additionally inserts a small obstacle into the Obstacle Map so the same spot is never walked into again.*
 
 ## Path planning
 
@@ -84,6 +86,14 @@ When several detections qualify, the largest (closest) one wins. The detector re
 
 Conflict images are sampled uniformly at random from the LOCO validation set at every step — they are not rendered from a simulated camera at the robot's actual position. This is a deliberate simplification: it exercises the full detect → explain pipeline on real warehouse imagery without requiring a 3D-rendered scenario.
 
+## Conflict-triggered obstacles
+
+Detecting a conflict does more than trigger a replan: it also permanently blocks the space the robot was walking into, so a later replan can never send it back through the same spot. When a conflict is detected at step position `P`, coming from the previous step position `Q`, a `CONFLICT_OBSTACLE_SIZE` x `CONFLICT_OBSTACLE_SIZE` square (currently 0.5 x 0.5 m) is inserted into the same `ObstacleMap` used by RRT-Connect and the waypoint checks, centered `CONFLICT_OBSTACLE_DISTANCE` (currently 0.5 m, one RRT step) ahead of `P` along the direction from `Q` to `P` — never centered on `P` itself, since the robot's own current position must stay free for RRT-Connect to plan a way out of it. If `Q` and `P` coincide (a degenerate direction), the obstacle is placed toward the target instead.
+
+The obstacle is inserted directly into the live R-tree (`ObstacleMap.add_box`), so it is immediately enforced by both RRT-Connect and the LLM's waypoint checks, and the system prompt is rebuilt with the updated obstacle list before the next replanning call, so the LLM is told about it too rather than discovering it only through a rejection.
+
+Every conflict inserts exactly one obstacle, whether or not it leads to a replan (including the final conflict that exhausts the replan budget), so the saved `conflict_boxes` always line up one-to-one, in order, with `conflict_log`.
+
 ## XAI reporting
 
 `report/build_report.py` reads a finished run (`results/industrial_use_case/session.json`) and, for every logged conflict, explains **only the object that triggered it** (both D-CRISP and SSGrad-CAM++ explain a single detection per call) with:
@@ -95,8 +105,8 @@ D-CRISP is instantiated fresh for every conflict image rather than reused across
 
 `report/route_visualizer.py` reconstructs the trajectory actually walked across every replan (concatenating `route_history` up to each logged conflict position) and renders it as a two-tab Plotly figure embedded in the report:
 
-- **Route** — the room, obstacles, the full walked path colored by step, every conflict position, and every abandoned route tail (dashed), all shown at once.
-- **Animation (0.5 m/s)** — the same scene animated frame by frame at a constant robot speed, with Play/Pause controls and a scrub slider; abandoned tails and conflict markers appear progressively, at the point in the animation where they actually happened.
+- **Route** — the room, the scenario's original obstacles, every conflict-triggered obstacle (in yellow, to distinguish it from the original shelving), the full walked path colored by step, every conflict position, and every abandoned route tail (dashed), all shown at once.
+- **Animation (0.5 m/s)** — the same scene animated frame by frame at a constant robot speed, with Play/Pause controls and a scrub slider; abandoned tails, conflict markers, and conflict-triggered obstacles all appear progressively, at the exact frame in which they actually happened.
 
 `report/export_pdf.py` converts the finished `report.html` into `report.pdf` using a headless Chromium browser (Playwright). The PDF keeps the static route view and every conflict's XAI section, but **not the animation** — a static document has no equivalent for Play/Pause/slider controls.
 
@@ -104,24 +114,24 @@ D-CRISP is instantiated fresh for every conflict image rather than reused across
 
 ```
 industrial_use_case/
-├── README.md # This file
-├── init.py
+├── README.md                    # This file
+├── __init__.py
 ├── planning/
-│ ├── init.py
-│ ├── obstacles_2d.py # ObstacleMap (R-tree) + local free-space hints
-│ ├── rrt_planner.py # RRT-Connect planner
-│ ├── prompt_builder.py # System prompt sent to the LLM
-│ └── llm_rrt_planner.py # LLM waypoint proposal loop + RRT-Connect glue
+│   ├── __init__.py
+│   ├── obstacles_2d.py          # ObstacleMap (R-tree) + local free-space hints
+│   ├── rrt_planner.py           # RRT-Connect planner
+│   ├── prompt_builder.py        # System prompt sent to the LLM
+│   └── llm_rrt_planner.py       # LLM waypoint proposal loop + RRT-Connect glue
 ├── execution/
-│ ├── init.py
-│ ├── conflict_checker.py # YOLO26 (LOCO) conflict detector
-│ ├── session.py # In-memory run state (DemoSession)
-│ └── run_demo.py # Entry point: plan, execute, replan, save session.json
+│   ├── __init__.py
+│   ├── conflict_checker.py      # YOLO26 (LOCO) conflict detector
+│   ├── session.py               # In-memory run state (DemoSession)
+│   └── run_demo.py              # Entry point: plan, execute, replan, save session.json
 └── report/
-├── init.py
-├── build_report.py # Per-conflict XAI report -> report.html
-├── route_visualizer.py # 2D route + constant-speed animation (Plotly)
-└── export_pdf.py # report.html -> report.pdf (static route view only)
+    ├── __init__.py
+    ├── build_report.py          # Per-conflict XAI report -> report.html
+    ├── route_visualizer.py      # 2D route + constant-speed animation (Plotly)
+    └── export_pdf.py            # report.html -> report.pdf (static route view only)
 ```
 
 ## Setup
@@ -197,6 +207,7 @@ The demo scenario, planner budgets, and detection thresholds are fixed constants
 | `STEP_SIZE`, `COLLISION_RESOLUTION`, `MAX_SAMPLES` | `execution/run_demo.py` | RRT-Connect step size, collision-check resolution, sample budget |
 | `MAX_LLM_RETRIES`, `MAX_TOTAL_REPLANS`, `SEED` | `execution/run_demo.py` | LLM retry budget per planning call, total replan budget for the run, RNG seed |
 | `NEAR_RELATIVE_AREA_THRESHOLD`, `CENTER_FRACTION` | `execution/conflict_checker.py` | Conflict-trigger thresholds (see "Conflict detection" above) |
+| `CONFLICT_OBSTACLE_SIZE`, `CONFLICT_OBSTACLE_DISTANCE` | `execution/run_demo.py` | Size and placement distance of the obstacle inserted at each conflict (see "Conflict-triggered obstacles" above) |
 | `WAYPOINT_COUNT_RANGE` | `planning/prompt_builder.py` | Min/max waypoints the LLM is asked to propose per call |
 | `ROBOT_SPEED` | `report/route_visualizer.py` | Animation speed (m/s) |
 
@@ -205,3 +216,4 @@ The demo scenario, planner budgets, and detection thresholds are fixed constants
 - Conflict images are drawn at random from the LOCO validation set at every step, not from a simulated camera consistent with the robot's actual position in the room (see "Conflict detection" above).
 - The scenario (room, obstacles, start/target) is a single fixed layout, not loaded from a config file or varied between runs.
 - `report.pdf` has no equivalent of the animation tab — it keeps the static route map and every conflict's XAI section only.
+- The conflict-triggered obstacle is always an axis-aligned square: only its *position* accounts for the direction of travel, not its shape.
