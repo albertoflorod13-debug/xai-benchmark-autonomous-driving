@@ -63,19 +63,29 @@ class SSGradCAMPP:
     (e.g., via get_one2many_predictions, detection/yolo_head.py) and generates the heat 
     map for that specific instance. Designed to be invoked one image/instance at a time.
 
-    `model` and `model_prep` must be TWO distinct `YOLO` instances loaded from the same 
+    `model` and `model_prep` must be two distinct `YOLO` instances loaded from the same 
     checkpoint (same pattern as uncertainty/tta.py): `model` should never go through `.predict()`/`.val()` 
-    (they merge, and merging deletes cv2/cv3 -- see yolo_head.py) """
+    (they merge, and merging deletes cv2/cv3 (see yolo_head.py))
+
+    activation_layer_idx: which of cv3[s]'s two feature-map sub-layers (index 0 or 1, both
+    stride-1, same spatial resolution) is hooked as A_k. Default 1 preserves production behaviour; 
+    0 is the only other candidate, since branch[2] is already used as S_c."""
 
     def __init__(self, model, model_prep, device: str = "cuda",
-                 iou_match_thres: float = 0.999, eps: float = EPS_DEFAULT):
+                 iou_match_thres: float = 0.999, eps: float = EPS_DEFAULT,
+                 activation_layer_idx: int = 1):
         if device == "cuda" and not torch.cuda.is_available():
             device = "cpu"
+        assert activation_layer_idx in (0, 1), (
+            "cv3[s] only exposes two candidate feature-map sub-layers before the final "
+            "1x1 class-logit convolution (branch[2], already used as S_c)."
+        )
         self.device = device
         self.model = model
         self.model_prep = model_prep
         self.iou_match_thres = iou_match_thres
         self.eps = eps
+        self.activation_layer_idx = activation_layer_idx
 
         self.model.model.to(self.device)
         self.model.model.eval()
@@ -114,9 +124,10 @@ class SSGradCAMPP:
     def _register_hooks(self):
         for s in range(self.num_scales):
             branch = self.detect_head.cv3[s]  
-            self._hook_handles.append(branch[1].register_forward_hook(self._make_activation_hook(s)))
-            self._hook_handles.append(branch[2].register_forward_hook(self._make_logit_hook(s))) 
-
+            self._hook_handles.append(
+                branch[self.activation_layer_idx].register_forward_hook(self._make_activation_hook(s)))
+            self._hook_handles.append(branch[2].register_forward_hook(self._make_logit_hook(s)))
+            
     def _make_activation_hook(self, scale_idx: int):
         def _hook(module, inp, out):
             if out.requires_grad:  
