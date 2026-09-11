@@ -38,7 +38,7 @@ results/tta_uq/*.csv
 
 # D-CRISP outputs and result grids (reproducible via scripts/run_dcrisp_explanations.py
 # and scripts/run_evaluation.py, same criterion as results/ssgradcampp/)
-results/
+results/*
 
 # Pesos y checkpoints de modelos -- no se versionan por defecto (grandes y
 # reproducibles a partir de la config), salvo el checkpoint final ya entrenado,
@@ -60,8 +60,24 @@ results/runs/
 # D-CRISP vendorizado: repositorio de terceros, no se sube (ni codigo ni salidas)
 external/d-crisp/
 
+# Dataset LOCO (caso de uso industrial) -- mismo criterio que data/kitti/: no se versiona
+data/LOCO/
+
+# Checkpoints del fine-tuning sobre LOCO -- mismo criterio que models/finetuned/
+models/finetuned_loco/*
+!models/finetuned_loco/.gitkeep
+
+# Salida piloto de la validación de stability.py (notebooks/metrics_test.ipynb) -- reproducible,
+# mismo criterio que results/
+notebooks/stab_results.csv
+
 # Secretos / configuración local
 .env
 
 # Notas de trabajo internas -- no se publican en el repositorio remoto
 documentation.md
+plan_fase_final.md
+
+# Example explainability outputs, kept for the GitHub deliverable
+!results/examples/
+!results/examples/*.npz
